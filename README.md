@@ -10,11 +10,10 @@ The purpose of the model is to examine the relationship between Trump's tweets a
 2.tokenize per tweet and place a value between 5 and 5 per word depending on its sentiment.
 
 3.The sentiment value scheme for each tweet and the creation of 3 features-
- A. Number of tweets per day.
- 
- B. The retweet scheme of each tweet that day.
- 
- C. The sentiment scheme for each tweet, and then the sentiment scheme of all the tweets that day.
+
+A. Number of tweets per day.
+B. The retweet scheme of each tweet that day.
+C. The sentiment scheme for each tweet, and then the sentiment scheme of all the tweets that day.
  
 Finally we performed a 7-day-average in order to build a balanced model.
 
