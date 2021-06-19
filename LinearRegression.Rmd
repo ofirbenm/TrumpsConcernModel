@@ -1,0 +1,823 @@
+---
+title: "Trump"
+author: "Ofir Ben Moshe"
+date: "19 6 2021"
+output: html_document
+---
+
+```{r Librarries , echo = FALSE, include=FALSE}
+library(rvest) 
+library(vader)
+library(devtools)
+library(syuzhet)
+library(tm)
+library(rtweet)
+library(tidyverse)
+library(dsbox)
+library(lubridate)
+library(tidytext)
+library(kableExtra)
+library(dplyr)
+library(knitr)
+library(tinytex)
+library(broom)
+library(gridExtra)
+library(caret)
+library(recipes)
+library(rsample)
+library(workflows)
+library(recipes)
+library(parsnip)
+library(tidymodels)
+```
+
+[Question 2]{.ul}:
+===================
+
+\
+
+Abstract:
+==========================
+Donald Trump's presence on social media attracted attention worldwide since he joined Twitter in 2009, with the handle @realDonaldTrump, having over 88.9 million followers by 2021. He frequently tweeted during the 2016 election campaign and as president, until his ban in the final days of his term. Over twelve years (from the creation of his account in May 2009 until his permanent ban in January 2021), Trump tweeted around 57,000 times, including more than 25,000 times during his presidency. A spokesman for Trump said that Trump's tweets were considered "official statements made by the President of the United States." In 2020, Twitter began hiding or adding fact-check labels to any of Trump's tweets that spread misinformation about the COVID-19 pandemic, or falsely suggested that postal voting or electoral fraud may compromise the presidential election.
+
+\
+
+Research question:
+==========================
+
+In 2020, Twitter began hiding or adding fact-check labels to any of Trump's tweets that spread misinformation about the COVID-19 pandemic. Trump often posted controversial and false statements on Twitter. Trump's tweet undermined public health messaging and encouraged followers to disregard recommendations to prevent the spread of COVID-19. Scientific, medical, public health, and ethical experts, pandemic survivors, and the families those killed by COVID-19 expressed horror and dismay at Trump's attempt to downplay the COVID-19 pandemic in the United States, which at the time of Trump's tweet had killed at least 210,000 Americans.
+
+Due to those facts, our research question is:
+
+- Does Trump's tweets affect on the concern of republicans and democrats about COVID-19 pandemic?
+
+\
+
+
+Trump tweets data set:
+==========================
+
+```{r Data, echo = FALSE}
+# drop columns and clean date column
+trumpTweets <- readRDS("trump.rds") %>%
+      separate(date, c("date", "time"), sep = " ")  %>%
+    select(-c(id,favorites,time)) %>%
+    mutate(date = as.Date(date), retweets = as.numeric(retweets), isRetweet=as.factor(isRetweet))
+
+civiqs <- read.csv("civiqs_poll.csv")
+
+# Change columns names
+names(civiqs) <- c("date", "dem", "rep", "diff")
+
+# Change date to dmy type 
+civiqs$date <- mdy(civiqs$date)
+```
+
+```{r TweetsTable, echo = FALSE}
+tmp <- data.frame(Variable = c("Date",
+                        "isRetweet",
+                        "retweets",
+                        "text"),
+           Definition = c("The dates in the data",
+                          "False means trump wrote the tweet, True means trupm retweet someone else.",
+                          "Number of retweets of the tweet",
+                          "The content of the tweet"),
+           Example = c(as.character("2020-03-20 : 2020-04-04"),
+                   as.character("True or False"),
+                   as.character(paste0("Min = ",min(trumpTweets$retweets),", Median = ",median(trumpTweets$retweets),", Max = ",max(trumpTweets$retweets))),
+                   as.character("I was criticized by the Democrats when I closed the Country down to China many weeks...")))
+
+kable(tmp, booktabs = TRUE, caption = "Table 1: Descriptive trump tweets data set") %>%
+  kable_styling(latex_options = c("striped", "scale_down", "HOLD_position"), font_size = 15) %>%
+  column_spec(2, width = "30em")
+```
+
+
+
+\
+
+
+Exploring the data:
+==========================
+
+\
+
+
+
+```{r numtweetsperday, echo=FALSE}
+trumpTweets %>%
+  ggplot(aes(x = date)) +
+  geom_histogram(bins = 12, alpha = 0.5,position = "dodge", colour="black", fill="#69b3a2") + 
+  labs(title = "Amount of Trump's tweets ",subtitle = "between 2020-03-20 - 2020-04-04", y = "Number of tweets" , x = "Date")
+```
+
+[Explain]{.ul}-
+
+**We can see that the peek of the amount of tweets is in the end of March, when the virus start to spread faster and killed people.**
+
+\
+
+```{r, echo = FALSE}
+trumpTweets%>%
+  group_by(date,isRetweet)%>%
+  summarise(n=sum(retweets),.groups = 'drop')%>%
+  ggplot(mapping = aes(x=date,y=n/10000, fill=isRetweet))+
+  geom_bar(stat="identity")+
+  facet_wrap(~ isRetweet,nrow=2)+
+    labs(title = "Amounts of Trump's tweets by isRetweet feature",subtitle = "between 2020-03-20 to 2020-04-04", y = "Retweets in tens of thousands" , x = "Date")
+```
+
+[Explain]{.ul}-
+
+**We can see a sharp increase in the number of times Trump retweeted in late March, when the virus start to spread faster and killed people.**
+\
+
+
+
+```{r DataCleaning, echo = FALSE}
+cleanTrumpTweets <- trumpTweets %>%
+  # Remove unimportant words
+  mutate(text = str_replace_all(text,
+  "https://t.co/[A-Za-z\\d]+|&amp;|RT|https|@realDonaldTrump|@realdonaldtrump|P.M|A.M", "")) %>%
+  # Delete marks
+  mutate(text = str_replace_all(text, "[^[:alnum:]]", " ")) %>%
+  # Delete numbers
+  mutate(text = gsub("\\b\\d+\\b", "", text)) %>%
+  # Lower case
+  mutate(text = tolower(text)) %>%
+  # Word Types of Covid19
+  mutate(
+    text = str_replace_all(text, "covid-19", "covid19"),
+    text = str_replace_all(text, "covid 19", "covid19"),
+    text = str_replace_all(text, "covid_19", "covid19"),
+    text = str_replace_all(text, "coronavirus", "covid19"),
+    text = str_replace_all(text, "caronavirus", "covid19"),
+    text = str_replace_all(text, "covidー19", "covid19"),
+     text = str_replace_all(text, "covid ", "covid19 ")) %>%
+  mutate(i = row_number()) %>%
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words, by = "word") %>% 
+  group_by(date, i, retweets) %>%
+  summarise(text = paste(word, collapse = " "), .groups = 'drop')
+```
+
+
+\
+
+Data analysis:
+==========================
+
+In order to work with accurate information, we decided to find Corona-related tweets. In order to decide which tweet is related to Corona and which is not, we decided to look for the most common words, and from them to choose words related to Covid19. The words we searched for were one-gram, two-gram and three-gram words. We did this twice - after the first time we saved the tweets in which we found all these words, and performed a repeat search on them - meaning we searched again for words only this time on tweets that are certainly related to Corona.
+
+The explanatory variables:
+
+**1 - Log on the number of times has been done retweet per day - Log(retweets)**
+
+**2 - Number of tweets per day**
+
+
+```{r FirstModel, echo = FALSE}
+simple_model <- cleanTrumpTweets %>%
+  group_by(date) %>%
+  summarise(n = n(), retweets = sum(retweets)) %>%
+      mutate(behindN = (lag(n,n=1)+
+                      lag(n,n=2)+
+                      lag(n,n=3)+
+                      lag(n,n=4)+
+                      lag(n,n=5)+
+                      lag(n,n=6)+
+                      lag(n,n=7))/7 ,
+         behindRetweets = (lag(retweets,n=1)+
+                          lag(retweets,n=2)+
+                          lag(retweets,n=3)+
+                          lag(retweets,n=4)+
+                          lag(retweets,n=5)+
+                          lag(retweets,n=6)+
+                          lag(retweets,n=7))/7) %>%
+  drop_na() %>%
+  inner_join(civiqs, by = "date")
+
+mod1 <- lm(rep ~ behindN + log(behindRetweets), data = simple_model)
+mod2 <- lm(dem ~ behindN + log(behindRetweets), data = simple_model)
+mod3 <- lm(diff ~ behindN + log(behindRetweets), data = simple_model)
+
+
+tmp1 <- data.frame(Politic_view = c("Demokrats","Republicans","Differance"),
+                   pearson = c(glance(mod2)$r.squared**0.5, glance(mod1)$r.squared**0.5, glance(mod3)$r.squared**0.5))
+kable(tmp1,
+      booktabs = TRUE,
+      caption = "Linear regression model results for each column in the concern data set without filter tweets") %>%
+  kable_styling(latex_options = c("striped", "scale_down", "HOLD_position"), font_size = 15) %>%
+  column_spec(2, width = "30em") %>%
+  footnote(general = "By 7 day moving average")
+
+```
+
+Step 1 - find words related to Covid19 and save the tweets contains those words
+==========================
+
+```{r, echo = FALSE}
+covid19unigrams <- c("covid19", "fake", "workers", "businesses", "virus")
+words1 <- cleanTrumpTweets %>%
+  unnest_tokens(word, text) %>%
+  count(word, sort = TRUE) %>%
+  head(20)
+
+words1 %>%
+  mutate(word = reorder(word, n),class= case_when(word %in% covid19unigrams~TRUE,
+                                                  TRUE~FALSE)) %>%
+  ggplot(aes(word, n,fill=class)) +
+  geom_bar(stat = "identity", alpha = 0.5, color="black") +
+  coord_flip() +
+  labs(title = "20 unigrams with the largest frequency in Trump's tweets", x = "Unigrams " , y = "Frequency") +
+  theme(legend.position = "none")
+
+
+```
+
+[Explain]{.ul}-
+
+**The blue words represent unigrams words we decided related that to covid19.**
+
+\
+
+```{r, echo = FALSE}
+covid19bigrams <- c("social distancing", "task force", "cares act")
+
+words2 <- cleanTrumpTweets %>%
+  unnest_tokens(bigram, text, token = "ngrams",n=2) %>%
+  separate(bigram, c("word1", "word2"), sep = " ") %>%
+  filter(!word1 %in% covid19unigrams & !word2 %in% covid19unigrams) %>%
+  drop_na(word1,word2) %>%
+  mutate(bigram = paste(word1, word2)) %>%
+  count(bigram, sort = TRUE) %>%
+  head(20)
+
+words2 %>%
+mutate(word = reorder(bigram, n),
+       class= case_when(word %in% covid19bigrams~TRUE,
+                        TRUE ~ FALSE)) %>%
+ggplot(aes(word, n,fill=class)) +
+geom_bar(stat = "identity", alpha = 0.5, color="black") +
+coord_flip() +
+labs(title = "20 Bigrams with the largest frequency in Trump's tweets", x = "Bigrams " , y = "Frequency")+
+theme(legend.position = "none")
+```
+
+[Explain]{.ul}-
+
+**The blue words represent bigrams words we decided related that to covid19.**
+
+\
+
+```{r, echo = FALSE}
+
+covid19trigrams <- c("days slow spread","aid relief economic", "paid sick leave", "economic security act", "relief economic security","payroll tax cut")
+
+words3 <- cleanTrumpTweets %>%
+  unnest_tokens(trigram, text, token = "ngrams",n=3) %>%
+  separate(trigram, c("word1", "word2","word3"), sep = " ") %>%
+  filter(!word1 %in% covid19unigrams & !word2 %in% covid19unigrams & !word3 %in% covid19unigrams) %>%
+  drop_na(word1,word2,word3) %>%
+  mutate(trigram = paste(word1, word2, word3)) %>%
+  count(trigram, sort = TRUE) %>%
+  head(20)
+
+words3 %>%
+mutate(word = reorder(trigram, n),class= 
+         case_when(word %in% covid19trigrams~TRUE,
+                   TRUE~FALSE)) %>%
+  ggplot(aes(word, n,fill=class)) +
+  geom_bar(stat = "identity", alpha = 0.5, color="black") +
+  coord_flip() +
+  labs(title = "20 trigrams with the largest frequency in Trump's tweets", x = "Trigrams " , y = "Frequency")+
+  theme(legend.position = "none")
+```
+
+[Explain]{.ul}-
+
+**The blue words represent trigrams words we decided related that to covid19.**
+
+\
+
+```{r, echo = FALSE}
+covid19Words <- c(covid19unigrams, covid19bigrams, covid19trigrams)
+
+histogram <- cleanTrumpTweets %>%
+  mutate(Covid19Mention = 
+           case_when(grepl(paste(covid19Words, collapse = "|"), text) == TRUE ~ TRUE,
+           TRUE ~ FALSE))
+```
+
+
+```{r, echo = FALSE}
+histogram %>%
+  ggplot(aes(x = date, fill = Covid19Mention)) +
+  geom_histogram(bins = 12, alpha = 1,position = "dodge")+
+  labs(title = "Distribution of the number of tweets",
+       subtitle = "according to the reference to Covid19 in the tweet", x = "Date", y = "Number of tweets")
+```
+
+[Explain]{.ul}-
+
+**A different trend can be seen in the number of tweets associated with covid19 and those unrelated after the first filter.**
+
+\
+
+```{r, echo = FALSE}
+simple_model2 <- histogram %>%
+  filter(Covid19Mention == TRUE) %>%
+  group_by(date) %>%
+  summarise(n = n(), retweets = sum(retweets)) %>%
+    mutate(behindN = (lag(n,n=1)+
+                      lag(n,n=2)+
+                      lag(n,n=3)+
+                      lag(n,n=4)+
+                      lag(n,n=5)+
+                      lag(n,n=6)+
+                      lag(n,n=7))/7 ,
+         behindRetweets = (lag(retweets,n=1)+
+                          lag(retweets,n=2)+
+                          lag(retweets,n=3)+
+                          lag(retweets,n=4)+
+                          lag(retweets,n=5)+
+                          lag(retweets,n=6)+
+                          lag(retweets,n=7))/7) %>%
+  drop_na() %>%
+  inner_join(civiqs, by = "date")
+
+mod1 <- lm(rep ~ behindN + log(behindRetweets), data = simple_model2)
+mod2 <- lm(dem ~ behindN + log(behindRetweets), data = simple_model2)
+mod3 <- lm(diff ~ behindN + log(behindRetweets), data = simple_model2)
+
+tmp1 <- data.frame(Politic_view = c("Demokrats","Republicans","Differance"),
+                   pearson = c(glance(mod2)$r.squared**0.5, glance(mod1)$r.squared**0.5, glance(mod3)$r.squared**0.5))
+kable(tmp1,
+      booktabs = TRUE,
+      caption = "Linear regression model results after the first filter of tweets") %>%
+  kable_styling(latex_options = c("striped", "scale_down", "HOLD_position"), font_size = 15) %>%
+  column_spec(2, width = "30em")  %>%
+  footnote(general = "By 7 day moving average")
+```
+
+Step 2 - From covid19 found tweets look for new common words that are also related to covid19
+==========================
+
+```{r, echo = FALSE}
+# Work only with tweets related to covid19
+newTweets <- histogram %>%
+  filter(Covid19Mention == TRUE)
+```
+
+
+```{r, echo = FALSE}
+covid19unigrams<-c("act", "spread")
+
+newTweets %>%
+  unnest_tokens(word, text) %>%
+  filter(!word %in% covid19Words) %>%
+  count(word, sort = TRUE) %>%
+  head(20) %>%
+  mutate(word = reorder(word, n),class= case_when(word %in% covid19unigrams~TRUE,
+                                                  TRUE~FALSE)) %>%
+  ggplot(aes(word, n,fill=class)) +
+  geom_bar(stat = "identity", alpha = 0.5, color="black") +
+  coord_flip() +
+  labs(title = "20 unigrams with the largest frequency",
+           x = "Unigrams " , y = "Frequency")+
+  theme(legend.position = "none")
+```
+
+
+```{r, echo = FALSE}
+covid19bnigrams <- c("aid relief", "paid sick","sick leave", "economic security", "slow spread", "practice social")
+
+newTweets %>%
+  unnest_tokens(bigram, text, token = "ngrams",n=2) %>%
+  filter(!bigram %in% words2$bigram) %>%
+  separate(bigram, c("word1", "word2"), sep = " ") %>%
+  filter(!word1 %in% covid19Words & !word2 %in% covid19Words) %>%
+  drop_na(word1,word2) %>%
+  mutate(bigram = paste(word1, word2)) %>%
+  count(bigram, sort = TRUE) %>%
+  filter(!bigram %in% covid19Words) %>%
+  head(20) %>%
+  mutate(word = reorder(bigram, n),class= case_when(word %in% covid19bnigrams~TRUE,
+                                                  TRUE~FALSE)) %>%
+  ggplot(aes(word, n,fill=class)) +
+  geom_bar(stat = "identity", alpha = 0.5, color="black") +
+  coord_flip()+
+  labs(title = "20 bigrams with the largest frequency",
+       x = "Bigrams " , y = "Frequency")+
+  theme(legend.position = "none")
+```
+
+
+```{r, echo = FALSE}
+covid19Words1 <- c("bill", "cdcgov",
+                  "lamestream media", "healthcare", "h1n1", "china", "epidemic", "emergency", 
+                  "free testing")
+covid19WordsFinal <- c(covid19unigrams, covid19bigrams, covid19Words, covid19Words1)
+finalwords <- data.frame( "words" = covid19WordsFinal)
+
+
+kable(finalwords,
+      booktabs = TRUE,
+        caption = "Table 2: All words that has relation to COVID-19 in Trump's tweets.") %>%
+  kable_styling(latex_options = c("striped", "scale_down", "HOLD_position"), font_size = 15)
+```
+
+
+
+```{r, echo = FALSE}
+histogram <- cleanTrumpTweets %>%
+  mutate(Covid19Mention = 
+           case_when(grepl(paste(covid19WordsFinal, collapse = "|"), text) == TRUE ~ TRUE,
+           TRUE ~ FALSE)) 
+```
+
+
+```{r, echo = FALSE}
+histogram %>%
+  ggplot(aes(x = date, fill = Covid19Mention)) +
+  geom_histogram(bins = 12, alpha = 1,position = "dodge")+
+  labs(title = "Distribution of the number of tweets",
+       subtitle = "according to the reference to Covid19 in the tweet", x = "Date", y = "Number of tweets", caption = "We can see the increas of number of tweets the relation to COVID-19")
+```
+
+[Explain]{.ul}-
+
+**We can see the increase in the number of tweets related to Covid19 relative to the first step.**
+
+\
+
+```{r, echo=FALSE}
+simple_model3 <- histogram %>%
+  filter(Covid19Mention == TRUE) %>%
+  group_by(date) %>%
+  summarise(n = n(), retweets = sum(retweets)) %>%
+    mutate(behindN = (lag(n,n=1)+
+                      lag(n,n=2)+
+                      lag(n,n=3)+
+                      lag(n,n=4)+
+                      lag(n,n=5)+
+                      lag(n,n=6)+
+                      lag(n,n=7))/7 ,
+         behindRetweets = (lag(retweets,n=1)+
+                          lag(retweets,n=2)+
+                          lag(retweets,n=3)+
+                          lag(retweets,n=4)+
+                          lag(retweets,n=5)+
+                          lag(retweets,n=6)+
+                          lag(retweets,n=7))/7) %>%
+  drop_na() %>%
+  inner_join(civiqs, by = "date")
+
+mod1 <- lm(rep ~ behindN + log(behindRetweets), data = simple_model3)
+mod2 <- lm(dem ~ behindN + log(behindRetweets), data = simple_model3)
+mod3 <- lm(diff ~ behindN + log(behindRetweets), data = simple_model3)
+
+tmp1 <- data.frame(Politic_view = c("Demokrats","Republicans","Differance"),
+                   pearson = c(glance(mod2)$r.squared**0.5, glance(mod1)$r.squared**0.5, glance(mod3)$r.squared**0.5))
+kable(tmp1,
+      booktabs = TRUE,
+      caption = "Linear regression model results after the second filter of tweets") %>%
+  kable_styling(latex_options = c("striped", "scale_down", "HOLD_position"), font_size = 15) %>%
+  column_spec(2, width = "30em")  %>%
+  footnote(general = "By 7 day moving average")
+```
+
+
+Step 3 - Sentiment analysis:
+==========================
+```{r, echo = FALSE}
+histogram %>%
+  filter(Covid19Mention == TRUE) %>%
+  unnest_tokens(word, text) %>%
+  group_by(word) %>%
+  summarise(n=n()) %>%
+  ungroup() %>%
+  filter(!word %in% c("positive", "trump")) %>%
+  inner_join(get_sentiments("afinn"), by = "word") %>%
+  mutate(sign = case_when(
+    value < 0 ~ "negative",
+    TRUE ~ "positive"
+  )) %>%
+  mutate(value = case_when(
+    value < 0 ~ value*-1,
+    TRUE ~ value
+  )) %>%
+  group_by(sign) %>%
+  arrange(desc(value)) %>%
+  slice_head(n = 20) %>%
+    mutate(value = case_when(
+    sign == "negative" ~ value*-1,
+    TRUE ~ value
+  )) %>%
+  ggplot(aes(y = fct_reorder(word, value), x = value, fill = sign)) +
+  facet_wrap(~sign, scales = "free") +
+  geom_col(show.legend = FALSE) +
+  labs(title = "Sentiment of words in Trump's filter tweets",
+    subtitle = "Bing lexicon",
+    y = NULL, x = NULL)
+```
+
+[Explain]{.ul}-
+
+**Each word has a value between -5 and 5 in Trump's tweets, so we will sum up for each tweet his word values, and the same schema action we will perform for all the tweets that day, and we will add this as [another feature]{.ul}.**
+**NOTE - We will change words value(*-1) that have been linked as words with the opposite meaning as: positive(negative in our case), healthy(negative meaning)**
+
+\
+
+```{r, echo = FALSE}
+finalFetures <- histogram %>%
+  filter(Covid19Mention == TRUE) %>%
+  unnest_tokens(word, text) %>%
+  inner_join(get_sentiments("afinn"), by = "word") %>%
+  mutate(value = case_when(
+    word %in% c("positive", "healthy") ~ value*-1,
+    TRUE ~ value)) %>%
+  group_by(i,date,retweets) %>%
+  summarise(value = sum(value), .groups = 'drop') %>%
+  group_by(date) %>%
+  summarise(value = sum(value), retweets = sum(retweets), n = n())%>%
+  inner_join(civiqs, by="date")
+```
+
+
+```{r, echo = FALSE}
+final_data_lm <- finalFetures %>%
+  mutate(behindN = (lag(n,n=1)+
+                      lag(n,n=2)+
+                      lag(n,n=3)+
+                      lag(n,n=4)+
+                      lag(n,n=5)+
+                      lag(n,n=6)+
+                      lag(n,n=7))/7 ,
+         behindRetweets = (lag(retweets,n=1)+
+                          lag(retweets,n=2)+
+                          lag(retweets,n=3)+
+                          lag(retweets,n=4)+
+                          lag(retweets,n=5)+
+                          lag(retweets,n=6)+
+                          lag(retweets,n=7))/7 ,
+         behindvalue = (lag(value,n=1)+
+                          lag(value,n=2)+
+                          lag(value,n=3)+
+                          lag(value,n=4)+
+                          lag(value,n=5)+
+                          lag(value,n=6)+
+                          lag(value,n=7))/7) %>%
+  drop_na() %>%
+  select(date,dem,rep,diff,behindN,behindRetweets,behindvalue)
+```
+
+
+```{r,echo=FALSE}
+plot <- final_data_lm %>%
+  mutate(diff = diff*-1,
+         tweetsNumber = behindN,
+         retweetsNumber = log(behindRetweets),
+         sentimentValue = behindvalue) %>%
+  select(-c("behindN","behindRetweets","behindvalue")) %>%
+  pivot_longer(!date, names_to = "type", values_to = "count")
+
+
+neworder <- c("tweetsNumber","retweetsNumber","sentimentValue","dem","diff","rep")
+plot <- arrange(mutate(plot,type=factor(type,levels=neworder)),type)
+
+
+plot %>%
+  ggplot(aes(x=date,y=count, color = type)) +
+  geom_line(size=1.5) +
+  facet_wrap(~type, scales = "free")+
+  labs(x="Date",
+       y="Count",
+       title = "Compare the trends of concern and the 3 features")+
+    guides(color = FALSE)
+```
+
+[Explain]{.ul}-
+
+**It can be seen that there is a relationship in the behavior of the three features and each of the variables of concern.**
+
+
+ 
+```{r K-cross validation, include=FALSE}
+tweets_rec <- recipe(rep ~ behindN + behindRetweets + behindvalue, data = final_data_lm) %>%
+  step_log(behindRetweets) %>%
+  step_center(all_numeric_predictors()) %>%
+  step_scale(all_numeric_predictors())
+
+office_mod <- linear_reg() %>%  set_engine("lm")
+
+office_wflow <- workflow() %>%  add_model(office_mod) %>%
+add_recipe(tweets_rec)
+
+# Define training control
+set.seed(22)
+folds <- vfold_cv(final_data_lm, v=5)
+
+set.seed(23)
+office_fit_rs <- office_wflow %>%  fit_resamples(folds)
+
+rep_collect <- collect_metrics(office_fit_rs, summarize = FALSE)%>%
+  mutate(.estimate = case_when(
+    .metric == "rsq" ~ .estimate**0.5,
+    TRUE ~ .estimate)) %>%
+  group_by(.metric) %>%
+  summarise(mean = mean(.estimate),
+            std_err = sd(.estimate))
+
+rep_matrix <- collect_metrics(office_fit_rs, summarize = FALSE) %>%
+  mutate(.estimate = case_when(
+    .metric == "rsq" ~ .estimate**0.5,
+    TRUE ~ .estimate
+  ))
+
+
+tweets_rec <- recipe(dem ~ behindN + behindRetweets + behindvalue, data = final_data_lm) %>%
+  step_log(behindRetweets) %>%
+  step_center(all_numeric_predictors()) %>%
+  step_scale(all_numeric_predictors())
+
+office_mod <- linear_reg() %>%  set_engine("lm")
+
+office_wflow <- workflow() %>%  add_model(office_mod) %>%
+add_recipe(tweets_rec)
+
+# Define training control
+set.seed(22)
+folds <- vfold_cv(final_data_lm, v=5)
+
+set.seed(23)
+office_fit_rs <- office_wflow %>%  fit_resamples(folds)
+
+dem_collect <- collect_metrics(office_fit_rs, summarize = FALSE)%>%
+  mutate(.estimate = case_when(
+    .metric == "rsq" ~ .estimate**0.5,
+    TRUE ~ .estimate)) %>%
+  group_by(.metric) %>%
+  summarise(mean = mean(.estimate),
+            std_err = sd(.estimate))
+
+dem_matrix <- collect_metrics(office_fit_rs, summarize = FALSE)%>%
+  mutate(.estimate = case_when(
+    .metric == "rsq" ~ .estimate**0.5,
+    TRUE ~ .estimate
+  ))
+
+
+tweets_rec <- recipe(diff ~ behindN + behindRetweets + behindvalue, data = final_data_lm) %>%
+  step_log(behindRetweets) %>%
+  step_center(all_numeric_predictors()) %>%
+  step_scale(all_numeric_predictors())
+
+office_mod <- linear_reg() %>%  set_engine("lm")
+
+office_wflow <- workflow() %>%  add_model(office_mod) %>%
+add_recipe(tweets_rec)
+
+# Define training control
+set.seed(22)
+folds <- vfold_cv(final_data_lm, v=5)
+
+set.seed(23)
+office_fit_rs <- office_wflow %>%  fit_resamples(folds)
+
+diff_collect <- collect_metrics(office_fit_rs, summarize = FALSE)%>%
+  mutate(.estimate = case_when(
+    .metric == "rsq" ~ .estimate**0.5,
+    TRUE ~ .estimate)) %>%
+  group_by(.metric) %>%
+  summarise(mean = mean(.estimate),
+            std_err = sd(.estimate))
+```
+ 
+ 
+
+ 
+Findings
+===================
+Table 3 shows that the tweets features are highly correlated with the concern of the democrats and the republicans. 
+The linear regression model is estimated with moving average of 7 days of features like number of Donald Trump's tweets that related to the virus, the log number of the number of time people retweets Trump tweets, and the by the positive/negative score of Trump tweets according to afin method of score. 
+
+\
+
+```{r, echo = FALSE}
+tmp1 <- data.frame(Politic_view = c("Demokrats","Republicans","Differance"),
+                   correlationCoeficint = c(dem_collect$mean[2], rep_collect$mean[2], diff_collect$mean[2]),
+                   rmse = c(dem_collect$mean[1], rep_collect$mean[1],diff_collect$mean[1]),
+                   std_err = c(dem_collect$std_err[1], rep_collect$std_err[1],diff_collect$std_err[1]))
+kable(tmp1,
+      booktabs = TRUE,
+      caption = "Table 3: Linear regression model test results for each column in the concern data set") %>%
+  kable_styling(latex_options = c("striped", "scale_down", "HOLD_position"), font_size = 15) %>%
+  column_spec(2, width = "30em") %>%
+  footnote(general = "By 5-cross valudation")
+```
+\
+
+```{r, echo = FALSE}
+concern <- lm(rep~ log(behindRetweets), data = final_data_lm)
+
+  
+ggplot(final_data_lm, aes(x=log(behindRetweets),y=rep)) +
+geom_point(na.rm = TRUE) +
+geom_smooth(method='lm', formula= y~x, na.rm = TRUE)+
+labs(title = "The relationship between log on number of retweets and republicans concern",
+       subtitle = "Only tweets that refer to Covid19",
+       x= "Log on number of retweets",
+       y = "Republicans concern")
+
+```
+
+\
+
+```{r, echo = FALSE}
+concern <- lm(rep~ behindN, data = final_data_lm)
+
+ggplot(final_data_lm, aes(x=behindN,y=rep)) +
+geom_point(na.rm = TRUE) +
+geom_smooth(method='lm', formula= y~x, na.rm = TRUE)+
+  labs(title = "The relationship between number of tweets and republicans concern",
+       subtitle = "Only tweets that refer to Covid19",
+       x= "Number of tweets",
+       y = "Republicans concern")
+```
+
+\
+
+```{r, echo = FALSE}
+concern <- lm(rep~ behindvalue, data = final_data_lm)
+
+ggplot(final_data_lm, aes(x=behindvalue,y=rep)) +
+geom_point(na.rm = TRUE) +
+geom_smooth(method='lm', formula= y~x, na.rm = TRUE)+
+  labs(title = "The relationship between sentiment rank and republicans concern",
+       subtitle = "Only from tweets that refer to Covid19",
+              x= "Sentiment rank",
+              y = "Republicans concern")
+```
+
+
+```{r model-results-log-new-cases1, echo = FALSE}
+mod1 <- lm(rep ~ behindN + log(behindRetweets) + behindvalue, data = final_data_lm)
+
+tmp <- data.frame(Variable = c("Intercept",
+                        "Tweets Number",
+                        "Log(Retweets number)",
+                        "Sentiment value"),
+           Coefficient = as.numeric(coefficients(mod1)),
+           pval = as.numeric(summary(mod1)$coefficients[,4])) %>%
+  mutate(pval = ifelse(pval >= 0.05, round(pval, 3), "< 0.05"))
+
+kable(tmp,
+        booktabs = TRUE,
+        caption = "Result1 - Results of estimating regression model. Dependent variable is republican concern rate.",
+        align = c("l", "c", "c"),
+        col.names = c("Variable", "Coefficient Estimate", "p-value")) %>%
+kable_styling(latex_options = c("striped", "scale_down", "HOLD_position"), font_size = 15)
+```
+
+```{r model-results-log-new-cases2, echo = FALSE}
+mod1 <- lm(dem ~ behindN + log(behindRetweets) + behindvalue, data = final_data_lm)
+
+tmp <- data.frame(Variable = c("Intercept",
+                        "Tweets Number",
+                        "Log(Retweets number)",
+                        "Sentiment value"),
+           Coefficient = as.numeric(coefficients(mod1)),
+           pval = as.numeric(summary(mod1)$coefficients[,4])) %>%
+  mutate(pval = ifelse(pval >= 0.05 ,round(pval, 3), "< 0.05"))
+kable(tmp,
+        booktabs = TRUE,
+        caption = "Result2 - Results of estimating regression model. Dependent variable is demokrats concern rate.",
+        align = c("l", "c", "c"),
+        col.names = c("Variable", "Coefficient Estimate", "p-value")) %>%
+  kable_styling(latex_options = c("striped", "scale_down", "HOLD_position"), font_size = 15)
+```
+
+```{r model-results-log-new-cases3, echo = FALSE}
+mod1 <- lm(diff ~ behindN + log(behindRetweets) + behindvalue, data = final_data_lm)
+
+tmp <- data.frame(Variable = c("Intercept",
+                        "Tweets Number",
+                        "Log(Retweets number)",
+                        "Sentiment value"),
+           Coefficient = as.numeric(coefficients(mod1)),
+           pval = as.numeric(summary(mod1)$coefficients[,4])) %>%
+  mutate(pval = ifelse(pval >= 0.05, round(pval, 3), "< 0.05"))
+kable(tmp,
+        booktabs = TRUE,
+        caption = "Result3 - Results of estimating regression model. Dependent variable is difference between political view concern.",
+        align = c("l", "c", "c"),
+        col.names = c("Variable", "Coefficient Estimate", "p-value")) %>%
+kable_styling(latex_options = c("striped", "scale_down", "HOLD_position"), font_size = 15)
+```
+
+[An explanation of the three models]{.ul}-
+
+**It can be seen in the three models - when each model is represented by a different response variable from the concern table, that the variable of log on the number of retweets on the same day has the strongest effect on the model.**
+**It can also be seen that the p-value of each of the variables is almost always less than 0.05 meaning that there is a relationship between them and the effect on the response variable.**
+
