@@ -4,7 +4,6 @@ https://ofirbenm.github.io/TrumpsConcernModel/
 # Explain:
 During first spread of Covif19 the level of concern in the US increased, but at a different pace and at a different level between each political group.
 The purpose of the model is to examine the relationship between Trump's tweets and the degree of concern in the United States, to which we have performed the following steps:
-
 1.Filter tweets by searching for corona-related words in each tweet.
 
 2.tokenize per tweet and place a value between 5 and 5 per word depending on its sentiment.
